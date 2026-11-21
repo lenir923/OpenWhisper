@@ -57,19 +57,31 @@ Write-Host "      Python : $pyBase"
 
 # --- 2. Arreter une version deja lancee -----------------------------------------
 # Seulement NOTRE python (ligne de commande "-m openwhisper").
-Write-Host "[2/7] Arret d'une version deja lancee"
+Write-Host "[2/7] Arret d'une version deja lancee, retrait de l'ancienne version .exe"
 Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -and $_.CommandLine -like '*-m openwhisper*' } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Get-Process -Name OpenWhisper -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 800
+# Ancienne version .exe (PyInstaller) : sinon elle se relancerait au demarrage.
+$ancien = Join-Path $env:LOCALAPPDATA "Programs\OpenWhisper"
+if (Test-Path $ancien) { Remove-Item $ancien -Recurse -Force -ErrorAction SilentlyContinue }
+Remove-Item (Join-Path $startup "OpenWhisper.lnk") -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $bureau "OpenWhisper.lnk") -Force -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "OpenWhisper" -ErrorAction SilentlyContinue
 
 # --- 3. Copier le programme -----------------------------------------------------
 Write-Host "[3/7] Copie du programme dans $dest"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
-# Une ancienne installation par cle USB (python embarque) passerait devant le .venv.
+# Une ancienne installation par cle USB (python embarque) passerait devant le .venv,
+# et son modele a pu etre copie depuis une cle retiree trop tot : on retire les deux,
+# le modele sera retelecharge proprement a l'etape 5.
 $embarque = Join-Path $dest "python"
-if (Test-Path $embarque) { Remove-Item $embarque -Recurse -Force }
+if (Test-Path $embarque) {
+    Remove-Item $embarque -Recurse -Force
+    $hfCle = Join-Path $dest "hf"
+    if (Test-Path $hfCle) { Remove-Item $hfCle -Recurse -Force }
+}
 foreach ($d in @("openwhisper", "assets")) {
     robocopy (Join-Path $src $d) (Join-Path $dest $d) /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
     $code = $LASTEXITCODE
