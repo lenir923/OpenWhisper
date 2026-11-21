@@ -1,6 +1,6 @@
 # OpenWhisper
 
-> **Version française pour Windows.** Ce dépôt est une version d'OpenWhisper réglée en français, avec la reconnaissance vocale 100 % locale et une installation sans droits administrateur.
+> **Version française pour Windows.** Ce dépôt est une version d'OpenWhisper réglée en français, avec une transcription rapide par Groq et une installation sans droits administrateur.
 > **Pour l'installer : suivez [INSTALLATION-WINDOWS.md](INSTALLATION-WINDOWS.md)**, ou donnez ce fichier à votre assistant IA, qui vous guidera pas à pas.
 > Projet d'origine : [fsouza-dot/OpenWhisper](https://github.com/fsouza-dot/OpenWhisper) (licence MIT).
 

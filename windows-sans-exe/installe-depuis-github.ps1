@@ -8,8 +8,10 @@
 #     telecharge peut ensuite etre supprime) ;
 #   - cree un environnement Python dedie (.venv) et y installe les
 #     dependances (~200 Mo, une seule fois) ;
-#   - regle l'appli en francais, transcription 100% locale, et telecharge
-#     le modele de reconnaissance (~480 Mo, une seule fois) ;
+#   - demande la cle API Groq (collee dans CETTE fenetre, jamais ailleurs),
+#     la teste aupres de Groq et la range dans le Gestionnaire
+#     d'identification Windows ; regle l'appli en francais, transcription
+#     par Groq (rapide et precise, internet necessaire pour dicter) ;
 #   - raccourci bureau + demarrage automatique a l'ouverture de session.
 #  Aucun .exe compile, aucun droit admin. Relancable : il reprend et remet
 #  tout d'aplomb. Fichier en ASCII pur (PowerShell 5.1).
@@ -74,8 +76,8 @@ Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" 
 Write-Host "[3/7] Copie du programme dans $dest"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 # Une ancienne installation par cle USB (python embarque) passerait devant le .venv,
-# et son modele a pu etre copie depuis une cle retiree trop tot : on retire les deux,
-# le modele sera retelecharge proprement a l'etape 5.
+# et son modele local a pu etre copie depuis une cle retiree trop tot : on retire
+# les deux (le mode Groq n'a pas besoin de modele local).
 $embarque = Join-Path $dest "python"
 if (Test-Path $embarque) {
     Remove-Item $embarque -Recurse -Force
@@ -106,18 +108,31 @@ if ($LASTEXITCODE -ne 0) {
 }
 $global:LASTEXITCODE = 0
 
-# --- 5. Reglages francais + modele + verification ------------------------------
-Write-Host "[5/7] Reglages (francais, transcription locale), modele et verification"
+# --- 5. Cle Groq + reglages francais + verification ---------------------------
+Write-Host "[5/7] Cle Groq, reglages en francais et verification"
+Write-Host "      Collez la cle Groq ICI, dans cette fenetre (Ctrl+V ou clic droit), puis Entree."
+Write-Host "      Elle s'affiche en etoiles, c'est normal. Ne la collez nulle part ailleurs."
+Write-Host "      (Entree sans rien coller = garder la cle deja enregistree sur ce PC.)"
 $env:OPENWHISPER_BUNDLE = "1"
 $env:HF_HOME = Join-Path $dest "hf"
 $env:HF_HUB_DISABLE_TELEMETRY = "1"
-$env:HF_HUB_DISABLE_SYMLINKS_WARNING = "1"
-Remove-Item Env:\HF_HUB_OFFLINE -ErrorAction SilentlyContinue
-& $venvPy -s (Join-Path $dest "preparer_poste.py")
-$verif = $LASTEXITCODE
-$global:LASTEXITCODE = 0
+$verif = 4
+for ($essai = 1; ($essai -le 3) -and ($verif -eq 4); $essai++) {
+    $sec = Read-Host "      Cle Groq (gsk_...)" -AsSecureString
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    try {
+        $env:OPENWHISPER_GROQ_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+    & $venvPy -s (Join-Path $dest "preparer_poste.py") --groq
+    $verif = $LASTEXITCODE
+    $global:LASTEXITCODE = 0
+    Remove-Item Env:\OPENWHISPER_GROQ_KEY -ErrorAction SilentlyContinue
+    if (($verif -eq 4) -and ($essai -lt 3)) { Write-Host "      On reessaie : recopiez la cle depuis la console Groq (bouton de copie)." }
+}
 if ($verif -ne 0) {
-    throw "La verification a echoue (code $verif) : voir les lignes KO au-dessus (section Depannage du guide)."
+    throw "La verification a echoue (code $verif) : voir les lignes KO au-dessus (section Depannage du guide), puis relancer INSTALLER-WINDOWS.bat."
 }
 
 # --- 6. Raccourci bureau + demarrage automatique ------------------------------
@@ -174,6 +189,6 @@ Write-Host "  - Il tourne en fond : un petit rond de couleur pres de l'horloge"
 Write-Host "    (cliquer sur la fleche ^ s'il est cache). Clic droit : Settings / Quit."
 Write-Host "  - Pour dicter : MAINTENIR Alt + Espace, parler, relacher."
 Write-Host "    Le texte s'ecrit la ou se trouve le curseur."
-Write-Host "  - Tout reste sur ce PC : la voix n'est envoyee nulle part."
+Write-Host "  - La voix est transcrite par Groq : il faut internet pour dicter."
 Write-Host "  - Il redemarre tout seul a chaque ouverture de session."
 Write-Host "  - Le dossier telecharge (et le ZIP) peuvent etre supprimes."

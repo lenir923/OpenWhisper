@@ -25,11 +25,20 @@ Remove-Item (Join-Path $startup "OpenWhisper.lnk") -Force -ErrorAction SilentlyC
 Remove-Item (Join-Path $bureau "OpenWhisper.lnk") -Force -ErrorAction SilentlyContinue
 Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "OpenWhisper" -ErrorAction SilentlyContinue
 
-Write-Host "[3/3] Fichiers de l'application, reglages et historique"
+Write-Host "[3/3] Cle Groq, fichiers de l'application, reglages et historique"
+# La cle Groq vit dans le Gestionnaire d'identification Windows : on la retire
+# avec le meme module (keyring) que l'application, tant que son Python existe.
+foreach ($py in @((Join-Path $dest ".venv\Scripts\python.exe"), (Join-Path $dest "python\python.exe"))) {
+    if (Test-Path $py) {
+        & $py -s -c "import keyring`ntry: keyring.delete_password('OpenWhisper', 'groq_api_key')`nexcept Exception: pass" 2>$null
+        break
+    }
+}
+$global:LASTEXITCODE = 0
 foreach ($d in @($dest, $donnees, (Join-Path $env:LOCALAPPDATA "Programs\OpenWhisper"))) {
     if (Test-Path $d) { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
 }
-cmd /c "cmdkey /delete:OpenWhisper >nul 2>nul"
+cmd /c "cmdkey /delete:OpenWhisper >nul 2>nul & cmdkey /delete:LegacyGeneric:target=OpenWhisper >nul 2>nul"
 $global:LASTEXITCODE = 0
 
 Write-Host ""

@@ -3,7 +3,8 @@
 ' Resout son propre dossier au clic, et marche pour les deux installations :
 '   - depuis la cle : python embarque dans  <dossier>\python\
 '   - depuis GitHub : environnement Python dans <dossier>\.venv\
-' Le modele vit dans <dossier>\hf ; HF_HUB_OFFLINE : rien ne sort du poste.
+' Mode local : le modele vit dans <dossier>\hf ; s'il y est deja, HF_HUB_OFFLINE
+' interdit tout appel a huggingface.co. Mode Groq : rien a telecharger.
 Option Explicit
 Dim sh, fso, racine, env, pyw
 Set sh = CreateObject("WScript.Shell")
@@ -18,7 +19,7 @@ End If
 Set env = sh.Environment("PROCESS")
 env("OPENWHISPER_BUNDLE") = "1"
 env("HF_HOME") = racine & "\hf"
-env("HF_HUB_OFFLINE") = "1"
+If fso.FolderExists(racine & "\hf\hub") Then env("HF_HUB_OFFLINE") = "1"
 env("HF_HUB_DISABLE_TELEMETRY") = "1"
 sh.CurrentDirectory = racine
 sh.Run """" & pyw & """ -s -m openwhisper", 0, False

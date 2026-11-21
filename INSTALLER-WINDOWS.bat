@@ -1,7 +1,7 @@
 @echo off
 rem ============================================================
 rem  OpenWhisper - installation sur ce PC Windows (dictee vocale)
-rem  Double-clic. Prerequis : Python 3.12 (python.org).
+rem  Double-clic. Prerequis : Python 3.12 (python.org) et une cle Groq.
 rem  Aucun droit admin requis. Guide : INSTALLATION-WINDOWS.md
 rem ============================================================
 echo.
