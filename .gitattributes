@@ -1,0 +1,5 @@
+# Scripts Windows : stockes en CRLF et jamais convertis, pour que le ZIP
+# telecharge depuis GitHub les livre tels quels a cmd et PowerShell.
+*.bat -text
+*.ps1 -text
+*.vbs -text

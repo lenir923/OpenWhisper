@@ -1,0 +1,18 @@
+# Dependances d'execution d'OpenWhisper sur Windows, versions figees
+# (celles du build teste). PySide6-Essentials suffit : l'app n'utilise que
+# QtCore, QtGui et QtWidgets. Pas de pytest ni d'outils de build ici.
+faster-whisper==1.2.1
+ctranslate2==4.7.2
+onnxruntime==1.26.0
+av==17.0.1
+tokenizers==0.23.1
+huggingface-hub==1.33.0
+numpy==2.4.6
+pydantic==2.13.4
+keyring==25.7.0
+PySide6-Essentials==6.11.1
+tqdm==4.67.3
+sounddevice==0.5.6
+pynput==1.8.2
+httpx==0.28.1
+pyperclip==1.11.0

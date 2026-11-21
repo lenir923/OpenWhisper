@@ -1,0 +1,93 @@
+# OpenWhisper
+
+> **Version française pour Windows.** Ce dépôt est une version d'OpenWhisper réglée en français, avec la reconnaissance vocale 100 % locale et une installation sans droits administrateur.
+> **Pour l'installer : suivez [INSTALLATION-WINDOWS.md](INSTALLATION-WINDOWS.md)**, ou donnez ce fichier à votre assistant IA, qui vous guidera pas à pas.
+> Projet d'origine : [fsouza-dot/OpenWhisper](https://github.com/fsouza-dot/OpenWhisper) (licence MIT).
+
+**A local-first, privacy-respecting dictation assistant.**  
+Hold a hotkey, speak, release — your text lands in whatever app you were using.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+
+🌐 **[Website](https://fsouza-dot.github.io/OpenWhisper/)** · 📦 **[Download](https://github.com/fsouza-dot/OpenWhisper/releases)**
+
+---
+
+<p align="center">
+  <img src="docs/openwhisper.gif" alt="OpenWhisper demo" width="600">
+</p>
+
+---
+
+## Features
+
+- **Push-to-talk** — Alt+Space by default, works globally
+- **Fast transcription** — local Whisper or Groq cloud
+- **Multilingual** — supports 90+ languages
+- **Privacy-first** — audio in RAM only, keys in credential manager, no telemetry
+
+## Install
+
+**Requirements:** Windows 10/11, macOS 12+ (Apple Silicon), or Linux. Python 3.11+ for source builds.
+
+Prebuilt binaries available in [Releases](../../releases):
+
+- **Windows** — `OpenWhisper.exe` (see [Windows Security Warnings](#windows-security-warnings))
+- **macOS** — `OpenWhisper-arm64.dmg` (see [MACOS.md](MACOS.md))
+- **Linux** — `OpenWhisper-linux.tar.gz`
+
+From source:
+
+```bash
+git clone https://github.com/fsouza-dot/OpenWhisper.git
+cd OpenWhisper
+python -m venv .venv && source .venv/bin/activate    # Windows: .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python run.py
+```
+
+### Windows Security Warnings
+
+Since OpenWhisper is not yet code-signed, Windows may show security warnings. Here's how to run it:
+
+**For ZIP downloads:**
+1. Right-click the downloaded ZIP file → **Properties**
+2. Check **"Unblock"** at the bottom → Click **OK**
+3. Extract the ZIP and run `OpenWhisper.exe`
+
+**If you see "Windows protected your PC" (SmartScreen):**
+1. Click **"More info"**
+2. Click **"Run anyway"**
+
+**If you get a "Missing DLL" or "numpy C-extensions" error:**
+1. Install [Microsoft Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+2. Restart OpenWhisper
+
+## Usage
+
+1. Launch — look for the tray icon
+2. (Optional) Add a [Groq API key](https://console.groq.com) in Settings for faster transcription
+3. Press **Alt+Space**, speak, release
+
+See [USAGE.md](USAGE.md) for details.
+
+## Configuration
+
+| Item | Windows | macOS | Linux |
+|------|---------|-------|-------|
+| Settings | `%APPDATA%\OpenWhisper\settings.json` | `~/Library/Application Support/OpenWhisper/settings.json` | `~/.local/share/OpenWhisper/settings.json` |
+| Logs | `%APPDATA%\OpenWhisper\openwhisper.log` | `~/Library/Application Support/OpenWhisper/openwhisper.log` | `~/.local/share/OpenWhisper/openwhisper.log` |
+| API keys | Credential Manager | Keychain | SecretService / kwallet |
+
+## Building
+
+```powershell
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm OpenWhisper.spec
+```
+
+See [BUILDING.md](BUILDING.md) for details.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

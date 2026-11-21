@@ -1,0 +1,354 @@
+"""The dictation state machine. Owns the flow:
+
+    idle → recording → transcribing → cleaning → inserting → idle
+
+All expensive work (STT + LLM cleanup) runs on a background thread so
+the Qt event loop stays responsive and hotkey callbacks are never
+blocked. UIState updates are marshalled back to the Qt thread via
+queued signals.
+"""
+from __future__ import annotations
+
+import threading
+import time
+from pathlib import Path
+from typing import Callable, Optional
+
+import numpy as np
+
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
+
+from .cleanup.pipeline import CleanupPipeline
+from .commands.command import DictationCommand
+from .errors import OpenWhisperError
+from .history import DictationHistory, HistoryEntry
+from .hotkey.hotkey_manager import HotkeyEvent, HotkeyManager
+from .logging_setup import get_logger
+from .protocols import AudioBuffer, SpeechToTextProvider, TextInsertionProvider
+from .audio.recorder import AudioRecorder
+from .audio.clip_store import save_clip, save_transcript
+from .cleanup.dictionary import PersonalDictionary
+from .settings import AppSettings, HotkeyMode, SettingsStore
+from .ui.ui_state import Phase, UIState
+
+log = get_logger("coordinator")
+
+# Minimum recording duration to avoid Whisper hallucinations on quick press-release
+MIN_RECORDING_SECONDS = 0.3
+
+# Minimum audio energy (RMS) to consider as speech vs silence. Calibrated
+# against a real laptop mic array, which delivers speech at RMS 0.008-0.02
+# and an idle room at ~0.0007. At the old 0.005 the threshold sat inside the
+# range of real speech, so whole dictations were discarded as silence.
+MIN_AUDIO_RMS = 0.0015
+
+
+class DictationCoordinator(QObject):
+    # Internal signal so background threads can publish back to the Qt thread.
+    _phase_signal = Signal(Phase, str)
+    _preview_signal = Signal(str)
+    _inserted_signal = Signal(str)
+    _schedule_idle_signal = Signal(int)
+    _audio_levels_signal = Signal(list)  # For real-time audio visualization
+
+    def __init__(
+        self,
+        settings_store: SettingsStore,
+        recorder: AudioRecorder,
+        stt_factory: Callable[[], SpeechToTextProvider],
+        cleanup_factory: Callable[[], CleanupPipeline],
+        inserter: TextInsertionProvider,
+        hotkey: HotkeyManager,
+        history: DictationHistory,
+        ui_state: UIState,
+    ):
+        super().__init__()
+        self._settings_store = settings_store
+        self._recorder = recorder
+        self._stt_factory = stt_factory
+        self._cleanup_factory = cleanup_factory
+        self._inserter = inserter
+        self._hotkey = hotkey
+        self._history = history
+        self._ui_state = ui_state
+
+        self._is_recording = False
+        self._worker_thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+
+        # Connect internal signals to UI state on the Qt thread.
+        self._phase_signal.connect(self._on_phase_signal)
+        self._preview_signal.connect(self._ui_state.set_live_preview)
+        self._inserted_signal.connect(self._ui_state.set_last_inserted)
+        self._schedule_idle_signal.connect(self._on_schedule_idle)
+        self._audio_levels_signal.connect(self._ui_state.set_audio_levels)
+
+        # Wire up audio levels from recorder
+        self._recorder.set_levels_callback(self._on_audio_levels)
+
+    # ---------------------------------------------------------- lifecycle
+
+    def start(self) -> None:
+        self.reload_hotkey()
+        self._hotkey.on_event = self._handle_hotkey
+
+    def stop(self) -> None:
+        self._hotkey.unregister()
+        if self._is_recording:
+            try:
+                self._recorder.stop()
+            except Exception:  # pragma: no cover
+                pass
+
+    def reload_hotkey(self) -> None:
+        self._hotkey.register(self._settings_store.settings.hotkeys)
+
+    # --------------------------------------------------------- hotkey flow
+
+    def _handle_hotkey(self, event: str) -> None:
+        mode = self._settings_store.settings.hotkey_mode
+        with self._lock:
+            if mode == HotkeyMode.push_to_talk:
+                if event == HotkeyEvent.PRESSED and not self._is_recording:
+                    self._begin_recording()
+                elif event == HotkeyEvent.RELEASED and self._is_recording:
+                    self._end_recording()
+            elif mode == HotkeyMode.toggle:
+                if event == HotkeyEvent.PRESSED:
+                    if self._is_recording:
+                        self._end_recording()
+                    else:
+                        self._begin_recording()
+
+    def _begin_recording(self) -> None:
+        try:
+            self._recorder.start()
+        except OpenWhisperError as exc:
+            log.error("Could not start recording: %s", exc)
+            self._phase_signal.emit(Phase.error, str(exc))
+            self._schedule_idle(1200)
+            return
+        self._is_recording = True
+        self._phase_signal.emit(Phase.recording, "")
+        self._preview_signal.emit("")
+
+    def _end_recording(self) -> None:
+        audio = self._recorder.stop()
+        self._is_recording = False
+        self._phase_signal.emit(Phase.transcribing, "")
+        # Kick the heavy work onto a worker thread so the UI stays responsive.
+        self._worker_thread = threading.Thread(
+            target=self._run_pipeline,
+            args=(audio,),
+            daemon=True,
+        )
+        self._worker_thread.start()
+
+    # ------------------------------------------------------ worker pipeline
+
+    def _run_pipeline(self, audio: AudioBuffer) -> None:
+        # Wrap entire pipeline in try/except to catch any uncaught exceptions.
+        # Without this, the worker thread dies silently and the HUD stays stuck.
+        try:
+            self._run_pipeline_inner(audio)
+        except Exception as exc:
+            log.exception("Uncaught pipeline error: %s", exc)
+            self._phase_signal.emit(Phase.error, "Unexpected error")
+            self._schedule_idle(1500)
+
+    def _run_pipeline_inner(self, audio: AudioBuffer) -> None:
+        settings = self._settings_store.settings
+        t0 = time.time()
+
+        # A quick press-release said nothing, and makes Whisper hallucinate.
+        # Nothing is lost by dropping it, so stay quiet in the HUD.
+        if audio.samples.size == 0 or audio.duration < MIN_RECORDING_SECONDS:
+            log.info("Ignoring %.2fs tap (under %.2fs)",
+                     audio.duration, MIN_RECORDING_SECONDS)
+            self._phase_signal.emit(Phase.idle, "")
+            return
+
+        # Persist the raw audio first (rolling last N clips), so a dictation
+        # can be recovered by re-transcribing even if the steps below hang or
+        # fail. Gated on the save_audio_history setting; never raises.
+        # This runs before the silence gate on purpose: the gate used to
+        # return first, which destroyed any dictation it misjudged.
+        saved_clip: Optional[Path] = None
+        if settings.save_audio_history:
+            saved_clip = save_clip(audio)
+
+        # Skip silent recordings (no actual speech). Logged with the measured
+        # level, because a drop the log never records is a drop nobody can
+        # debug, and slipping straight back to idle reads as a crash.
+        rms = float(np.sqrt(np.mean(audio.samples ** 2)))
+        if rms < MIN_AUDIO_RMS:
+            log.warning("Recording too quiet (RMS=%.5f < %.5f), not transcribed",
+                        rms, MIN_AUDIO_RMS)
+            self._phase_signal.emit(Phase.error, "No speech detected")
+            self._schedule_idle(2000)
+            return
+
+        # Log the attempt up front so a hang or silent drop is visible in the
+        # log (previously only success was logged, hiding silent failures).
+        log.info("Transcribing clip: %.1fs", audio.duration)
+
+        # 1. STT
+        try:
+            stt = self._stt_factory()
+            personal_dict = PersonalDictionary(settings.dictionary)
+            hints = personal_dict.stt_hints()
+            transcript = stt.transcribe(audio, hints)
+        except OpenWhisperError as exc:
+            log.error("Transcription failed: %s", exc)
+            self._phase_signal.emit(Phase.error, "Transcription failed")
+            self._schedule_idle(1500)
+            return
+        except Exception as exc:
+            log.exception("Unexpected transcription error: %s", exc)
+            self._phase_signal.emit(Phase.error, "Transcription failed")
+            self._schedule_idle(1500)
+            return
+
+        if not transcript.text.strip():
+            self._phase_signal.emit(Phase.idle, "")
+            return
+
+        # 2. Apply dictionary replacements (aliases -> canonical terms)
+        transcript_text = personal_dict.apply(transcript.text)
+
+        self._preview_signal.emit(transcript_text)
+        self._phase_signal.emit(Phase.cleaning, "")
+
+        # 3. Cleanup
+        try:
+            pipeline = self._cleanup_factory()
+            result = pipeline.run(transcript_text, settings)
+        except Exception as exc:
+            log.exception("Cleanup failed: %s", exc)
+            self._phase_signal.emit(Phase.error, "Cleanup failed")
+            self._schedule_idle(1500)
+            return
+
+        # 4. Commands
+        command: Optional[DictationCommand] = None
+        if result.command:
+            try:
+                command = DictationCommand(result.command)
+            except ValueError:
+                log.warning("Unknown command in result: %s", result.command)
+
+        if command is not None:
+            self._execute_command(command, settings)
+
+        # 5. Insertion
+        if result.cleaned:
+            self._phase_signal.emit(Phase.inserting, "")
+            try:
+                self._inserter.insert(result.cleaned)
+                self._inserted_signal.emit(result.cleaned)
+                self._history.record(
+                    HistoryEntry(
+                        raw_transcript=transcript.text,
+                        final_text=result.cleaned,
+                        inserted_into=_frontmost_app_name(),
+                    )
+                )
+                if saved_clip is not None:
+                    save_transcript(saved_clip, transcript.text, result.cleaned)
+            except Exception as exc:
+                log.exception("Insertion failed: %s", exc)
+                self._phase_signal.emit(Phase.error, "Paste failed")
+                self._schedule_idle(1500)
+                return
+
+        log.info("Pipeline complete in %.2fs (used_llm=%s, model=%s)",
+                 time.time() - t0, result.used_llm, result.model_used)
+        self._phase_signal.emit(Phase.idle, "")  # Hide immediately
+
+    # ------------------------------------------------------------ commands
+
+    def _execute_command(self, cmd: DictationCommand, settings: AppSettings) -> None:
+        log.info("Executing command: %s", cmd.value)
+        if cmd.is_destructive and settings.confirm_destructive_commands:
+            # MVP policy: for destructive commands we log and skip rather
+            # than popping a modal that would steal focus from the
+            # user's target app. A future version can add a HUD-based
+            # confirm button.
+            log.warning("Skipping destructive command %s (confirmations enabled)", cmd.value)
+            return
+
+        paster = self._inserter
+
+        try:
+            if cmd == DictationCommand.new_line:
+                paster.insert("\n")
+            elif cmd == DictationCommand.new_paragraph:
+                paster.insert("\n\n")
+            elif cmd == DictationCommand.bullet_list:
+                paster.insert("\n- ")
+            elif cmd == DictationCommand.numbered_list:
+                paster.insert("\n1. ")
+            elif cmd == DictationCommand.press_enter or cmd == DictationCommand.send:
+                if hasattr(paster, "press_key"):
+                    paster.press_key("enter")
+            elif cmd == DictationCommand.press_tab:
+                if hasattr(paster, "press_key"):
+                    paster.press_key("tab")
+            elif cmd == DictationCommand.press_escape:
+                if hasattr(paster, "press_key"):
+                    paster.press_key("escape")
+            elif cmd == DictationCommand.delete_last:
+                if hasattr(paster, "press_key"):
+                    paster.press_key("backspace")
+            elif cmd == DictationCommand.undo_last_dictation:
+                self._undo_last()
+            # rewrite_* commands are reflected in `result.cleaned` already.
+        except Exception as exc:
+            log.warning("Command execution failed: %s", exc)
+
+    def _undo_last(self) -> None:
+        last = self._history.pop_last()
+        if last is None:
+            return
+        paster = self._inserter
+        if not hasattr(paster, "press_key"):
+            return
+        # Best-effort: spam backspace equal to the inserted length.
+        for _ in range(len(last.final_text)):
+            try:
+                paster.press_key("backspace")
+            except Exception:  # pragma: no cover
+                break
+
+    # ------------------------------------------------------------- helpers
+
+    @Slot(Phase, str)
+    def _on_phase_signal(self, phase: Phase, message: str) -> None:
+        self._ui_state.set_phase(phase, message)
+
+    def _schedule_idle(self, delay_ms: int) -> None:
+        # Safe to call from any thread: hops onto the Qt thread via signal
+        # before touching QTimer (QTimer must be created on its owner thread).
+        self._schedule_idle_signal.emit(delay_ms)
+
+    @Slot(int)
+    def _on_schedule_idle(self, delay_ms: int) -> None:
+        QTimer.singleShot(delay_ms, lambda: self._ui_state.set_phase(Phase.idle, ""))
+
+    def _on_audio_levels(self, levels: list) -> None:
+        """Called from audio thread with microphone levels."""
+        # Emit signal to hop to Qt thread
+        self._audio_levels_signal.emit(levels)
+
+
+def _frontmost_app_name() -> Optional[str]:
+    """Get the name of the currently focused application.
+
+    Uses the platform module for cross-platform support.
+    Falls back to None on any error so the coordinator never breaks.
+    """
+    try:
+        from .platform import get_platform
+        return get_platform().get_foreground_app()
+    except Exception:
+        return None
