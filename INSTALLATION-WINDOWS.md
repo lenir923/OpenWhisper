@@ -28,6 +28,8 @@ Cette version est réglée **en français**. La transcription est faite par **Gr
 
 OpenWhisper est écrit en Python. On installe le Python officiel (gratuit, signé par la Python Software Foundation).
 
+Cette étape peut être sautée : si Python 3.12 manque, l'installeur de l'étape 4 l'installe tout seul (pour cet utilisateur, sans droits administrateur). La faire à la main reste utile si l'installation automatique échoue.
+
 1. Télécharger l'installeur : https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe
 2. Lancer le fichier téléchargé. Dans la première fenêtre :
    - **cocher « Add python.exe to PATH »** (case en bas de la fenêtre) ;

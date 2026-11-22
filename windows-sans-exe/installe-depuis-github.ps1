@@ -53,6 +53,23 @@ if (-not $pyBase) {
     if ($c -and $c.Source -notlike "*WindowsApps*") { $pyBase = Get-Python312 $c.Source @() }
 }
 if (-not $pyBase) {
+    # Pas de Python 3.12 : on installe l'officiel (python.org, signe), pour cet
+    # utilisateur seulement, sans droits admin, sans fenetre.
+    Write-Host "      Python 3.12 absent : installation automatique (python.org, ~25 Mo, 1 a 2 minutes)"
+    $pyExe = Join-Path $env:TEMP "python-3.12.10-amd64.exe"
+    curl.exe -L --fail --silent --show-error -o $pyExe "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
+    if ($LASTEXITCODE -ne 0) { throw "Telechargement de Python impossible (code $LASTEXITCODE) : verifier internet, puis relancer." }
+    $global:LASTEXITCODE = 0
+    $inst = Start-Process -FilePath $pyExe -Wait -PassThru -ArgumentList @(
+        "/quiet", "InstallAllUsers=0", "PrependPath=1", "Include_launcher=1", "InstallLauncherAllUsers=0",
+        "Include_test=0", "Include_doc=0", "Include_tcltk=0", "Shortcuts=0")
+    if ($inst.ExitCode -ne 0) {
+        throw "Installation de Python echouee (code $($inst.ExitCode)). L'installer a la main depuis python.org (etape 1 du guide), puis relancer."
+    }
+    $p = Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"
+    if (Test-Path $p) { $pyBase = Get-Python312 $p @() }
+}
+if (-not $pyBase) {
     throw "Python 3.12 introuvable. Installer Python 3.12 depuis python.org (etape 1 du guide, cocher 'Add python.exe to PATH'), fermer cette fenetre et relancer INSTALLER-WINDOWS.bat."
 }
 Write-Host "      Python : $pyBase"
